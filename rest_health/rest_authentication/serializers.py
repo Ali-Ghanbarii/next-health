@@ -1,9 +1,15 @@
 from rest_framework import serializers
 from .models import CustomUser
+from django.db.models import Q
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     phone_number = serializers.CharField(required=False, allow_blank=True)
-    password = serializers.CharField(required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    password = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    national_id = serializers.CharField(required=False, allow_blank=True)
+    passport_id = serializers.CharField(required=False, allow_blank=True)
+    nezam_vazife_code = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model = CustomUser
         fields = ['password', 'role', 'phone_number', 'is_iranian', 'national_id', 
@@ -11,48 +17,62 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """Custom validation for patient or doctor registration."""
+        print(f"Validating data: {data}")  # Debugging log
 
-        # Debugging logs
-        print(f"Validating data: {data}")
+        role = data.get('role')
+        phone_number = data.get('phone_number')
+        is_iranian = data.get('is_iranian', True)
+        national_id = data.get('national_id')
+        passport_id = data.get('passport_id')
+        email = data.get('email')
+        nezam_vazife_code = data.get('nezam_vazife_code')
 
-        if data['role'] == 'patient':
-            # Debugging logs for patients
-            print("Validating patient registration")
-            
-            # Foreign patient validation (if not Iranian)
-            if not data.get('is_iranian', True):  # Foreign patient (is_iranian=False)
-                print("Foreign patient")
-                if data.get('phone_number'):
+        # Ensure at least one unique identifier is provided
+        if not phone_number and not email:
+            raise serializers.ValidationError("Either phone number or email is required.")
+
+        # Check if the user already exists based on role and provided identifiers
+        user_exists = CustomUser.objects.filter(
+        (Q(phone_number=phone_number) if phone_number else Q()) |
+        (Q(email=email) if email else Q()) |
+        (Q(national_id=national_id) if national_id else Q()) |
+        (Q(passport_id=passport_id) if passport_id else Q()),
+        role=role
+        ).exists()
+        
+        if user_exists:
+            print("User already exists. Proceeding to login.")
+            return data
+
+        # Patient validation
+        if role == 'patient':
+            if not is_iranian:  # Foreign patient
+                if phone_number:
                     raise serializers.ValidationError("Foreign patients cannot provide a phone number.")
-                else:
-                    data['phone_number'] = f"non_ts{data.get('passport_id')}"  # Generate phone number based on passport_id
-
-                if not data.get('passport_id') or not data.get('email'):
+                if not passport_id or not email:
                     raise serializers.ValidationError("Foreign patients must provide both a passport ID and an email.")
-            else:  # Iranian patient (is_iranian=True)
-                print("Iranian patient")
-                if not data.get('phone_number'):
+                data['phone_number'] = f"non_ts{passport_id}"  # Generate phone number based on passport_id
+            else:  # Iranian patient
+                if not phone_number:
                     raise serializers.ValidationError("Iranian patients must provide a phone number.")
-                if not data.get('national_id'):
+                if not national_id:
                     raise serializers.ValidationError("Iranian patients must provide a national ID.")
 
-            # Assuming you have authentication logic for patients in the model
             user = CustomUser(**data)
             if not user.authenticate_patient():
                 raise serializers.ValidationError("Invalid patient details.")
 
-        elif data['role'] == 'doctor':
-            # Debugging logs for doctors
-            print("Validating doctor registration")
-            
-            if 'phone_number' not in data or not data['phone_number']:
-                raise serializers.ValidationError({"phone_number": "Doctors must provide a valid phone number."})
+        # Doctor validation
+        elif role == 'doctor':
+            if is_iranian:
+                if not phone_number or not national_id or not nezam_vazife_code:
+                    raise serializers.ValidationError("Iranian doctors must provide phone number, national ID, and Nezam Vazife code.")
+            else:
+                if not passport_id or not email:
+                    raise serializers.ValidationError("Foreign doctors must provide both a passport ID and an email.")
 
-            # Assuming you have authentication logic for doctors in the model
             user = CustomUser(**data)
             if not user.authenticate_doctor():
                 raise serializers.ValidationError("Invalid doctor details.")
 
-
-        
         return data
